@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Calendar, CheckSquare, Clock, Search, Filter, Trash2, Edit3, Save, X, FileText, ChevronDown, ChevronRight, ExternalLink, BarChart3 } from 'lucide-react';
+import { Plus, Calendar, Search, Trash2, Edit3, X, FileText, ExternalLink, MoreVertical, Check } from 'lucide-react';
 import { aiService } from './services/aiService';
 import { databaseService } from './services/databaseService';
 
@@ -17,10 +17,52 @@ const TaskManager = () => {
   const [addingSubTaskTo, setAddingSubTaskTo] = useState(null);
   const [subTaskTexts, setSubTaskTexts] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [allTasksSearchTerm, setAllTasksSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [activeTab, setActiveTab] = useState('today');
   const [summaryModal, setSummaryModal] = useState({ isOpen: false, content: '', title: '' });
-  const [displayedSummary, setDisplayedSummary] = useState({ content: '', type: '' });
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Skip if user is typing in an input/textarea
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      
+      // Tab navigation shortcuts
+      if (e.key === '1' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setActiveTab('today');
+      } else if (e.key === '2' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setActiveTab('all');
+      } else if (e.key === '3' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setActiveTab('completed');
+      }
+      
+      // New task shortcut
+      if (e.key === 'n' && activeTab === 'all') {
+        e.preventDefault();
+        const input = document.querySelector('input[placeholder="What needs to be done?"]');
+        if (input) input.focus();
+      }
+      
+      // Search shortcut
+      if (e.key === '/') {
+        e.preventDefault();
+        if (activeTab === 'all') {
+          const searchInput = document.querySelector('input[placeholder="Search tasks..."]');
+          if (searchInput) searchInput.focus();
+        } else if (activeTab === 'completed') {
+          const searchInput = document.querySelector('input[placeholder="Search..."]');
+          if (searchInput) searchInput.focus();
+        }
+      }
+    };
+    
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab]);
 
   // Load data on component mount
   useEffect(() => {
@@ -437,7 +479,67 @@ const TaskManager = () => {
   };
 
   const getTodaysTasks = () => {
-    return tasks.filter(task => selectedForToday.includes(task.id));
+    const todayTasks = tasks.filter(task => selectedForToday.includes(task.id));
+    
+    // Create a set of task IDs that are in today's view for quick lookup
+    const todayTaskIds = new Set(todayTasks.map(t => t.id));
+    
+    // Build a proper hierarchy for today's tasks
+    const adjustedTasks = todayTasks.map(task => {
+      // If the task's parent is also in today's view, maintain its level
+      // Otherwise, treat it as a root task (level 0)
+      const adjustedLevel = task.parentId && todayTaskIds.has(task.parentId) 
+        ? task.level 
+        : 0;
+      
+      return {
+        ...task,
+        level: adjustedLevel
+      };
+    });
+    
+    // Sort tasks to ensure parents appear before their children
+    const sortedTasks = [];
+    const processed = new Set();
+    
+    // Helper function to add task and its children in order
+    const addTaskWithChildren = (task) => {
+      if (processed.has(task.id)) return;
+      
+      sortedTasks.push(task);
+      processed.add(task.id);
+      
+      // Find and add children that are in today's selection
+      const children = adjustedTasks
+        .filter(t => t.parentId === task.id)
+        .sort((a, b) => {
+          const aDate = a.createdAt || new Date().toISOString();
+          const bDate = b.createdAt || new Date().toISOString();
+          return aDate.localeCompare(bDate);
+        });
+      
+      children.forEach(child => addTaskWithChildren(child));
+    };
+    
+    // First add all root tasks (those without parents in today's view)
+    const rootTasks = adjustedTasks
+      .filter(task => !task.parentId || !todayTaskIds.has(task.parentId))
+      .sort((a, b) => {
+        const aDate = a.createdAt || new Date().toISOString();
+        const bDate = b.createdAt || new Date().toISOString();
+        return aDate.localeCompare(bDate);
+      });
+    
+    rootTasks.forEach(task => addTaskWithChildren(task));
+    
+    // Add any remaining tasks that weren't processed (shouldn't happen, but just in case)
+    adjustedTasks.forEach(task => {
+      if (!processed.has(task.id)) {
+        sortedTasks.push(task);
+      }
+    });
+    
+    return sortedTasks;
   };
 
   const getFilteredCompletedTasks = () => {
@@ -635,10 +737,72 @@ const TaskManager = () => {
     return result;
   };
 
+  const getFilteredAllTasks = () => {
+    if (!allTasksSearchTerm.trim()) {
+      return getSortedTasks();
+    }
+    
+    const searchLower = allTasksSearchTerm.toLowerCase();
+    const filteredTasks = tasks.filter(task => {
+      const matchesTaskText = task.text.toLowerCase().includes(searchLower);
+      const matchesParentText = task.parentText && task.parentText.toLowerCase().includes(searchLower);
+      return matchesTaskText || matchesParentText;
+    });
+    
+    // Now sort the filtered tasks maintaining hierarchy
+    const taskMap = new Map();
+    filteredTasks.forEach(task => taskMap.set(task.id, task));
+    
+    const result = [];
+    const processed = new Set();
+    
+    // Function to recursively add a task and all its children
+    const addTaskWithChildren = (task) => {
+      if (processed.has(task.id)) return;
+      
+      result.push(task);
+      processed.add(task.id);
+      
+      // Find and add all direct children of this task that are in the filtered list
+      const children = filteredTasks
+        .filter(t => t.parentId === task.id)
+        .sort((a, b) => {
+          const aDate = a.createdAt || a.created_at || new Date().toISOString();
+          const bDate = b.createdAt || b.created_at || new Date().toISOString();
+          return aDate.localeCompare(bDate);
+        });
+      
+      children.forEach(child => addTaskWithChildren(child));
+    };
+    
+    // First, add all root tasks (no parent) and their hierarchies
+    const rootTasks = filteredTasks
+      .filter(task => !task.parentId)
+      .sort((a, b) => {
+        const aDate = a.createdAt || a.created_at || new Date().toISOString();
+        const bDate = b.createdAt || b.created_at || new Date().toISOString();
+        return aDate.localeCompare(bDate);
+      });
+    
+    rootTasks.forEach(rootTask => addTaskWithChildren(rootTask));
+    
+    // Add any orphaned tasks (tasks whose parent doesn't exist in filtered results)
+    filteredTasks.forEach(task => {
+      if (!processed.has(task.id)) {
+        addTaskWithChildren(task);
+      }
+    });
+    
+    return result;
+  };
+
   const TaskItem = ({ task, showActions = true, isCompleted = false, showCheckbox = false }) => {
     const subtaskInputRef = useRef(null);
+    const [showMenu, setShowMenu] = useState(false);
+    const [isHovered, setIsHovered] = useState(false);
+    const menuRef = useRef(null);
     const indentationStyle = {
-      marginLeft: `${(task.level || 0) * 24}px`
+      marginLeft: `${(task.level || 0) * 20}px`
     };
 
     // Auto-focus when sub-task input appears
@@ -652,156 +816,221 @@ const TaskManager = () => {
       }
     }, [addingSubTaskTo, task.id]);
 
+    // Close menu when clicking outside
+    useEffect(() => {
+      const handleClickOutside = (event) => {
+        if (menuRef.current && !menuRef.current.contains(event.target)) {
+          setShowMenu(false);
+        }
+      };
+      if (showMenu) {
+        document.addEventListener('mousedown', handleClickOutside);
+      }
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }, [showMenu]);
+
     return (
       <div 
-        className={`p-4 rounded-lg border ${isCompleted ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'} shadow-sm`}
+        className={`group relative py-2 px-3 rounded ${isCompleted ? 'bg-gray-50' : 'hover:bg-gray-50'} transition-colors`}
         style={indentationStyle}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
       >
         {editingTask === task.id ? (
-          <div className="space-y-3">
+          <div className="space-y-2">
             <textarea
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
-              className="w-full p-2 border border-gray-300 rounded resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              rows="3"
+              className="w-full p-2 border border-gray-200 rounded text-sm resize-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+              rows="2"
+              autoFocus
             />
             <div className="flex gap-2">
               <button
                 onClick={saveEdit}
-                className="flex items-center gap-1 px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                className="text-sm px-2 py-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
               >
-                <Save size={16} /> Save
+                Save
               </button>
               <button
                 onClick={cancelEdit}
-                className="flex items-center gap-1 px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                className="text-sm px-2 py-1 text-gray-500 hover:bg-gray-100 rounded transition-colors"
               >
-                <X size={16} /> Cancel
+                Cancel
               </button>
             </div>
           </div>
         ) : (
           <>
-            <div className="flex items-start gap-3 mb-3">
+            <div className="flex items-start gap-2">
               {showCheckbox && (
                 <input
                   type="checkbox"
                   checked={selectedTasks.includes(task.id)}
                   onChange={() => toggleTaskSelection(task.id)}
-                  className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  className="mt-0.5 h-3.5 w-3.5 text-blue-600 focus:ring-1 focus:ring-blue-500 border-gray-300 rounded"
                 />
               )}
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 {task.parentText && (
-                  <div className="text-xs text-gray-500 mb-1 font-medium">
-                    📋 {task.parentText}
+                  <div className="text-xs text-gray-400 mb-0.5">
+                    {task.parentText}
                   </div>
                 )}
-                <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono">{task.text}</pre>
+                <div className="flex items-center gap-2">
+                  <div className={`text-sm ${isCompleted ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{task.text}</div>
+                  {!isCompleted && selectedForToday.includes(task.id) && (
+                    <span className="inline-flex items-center px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">
+                      Today
+                    </span>
+                  )}
+                </div>
                 {isCompleted && (
-                  <div className="text-xs text-gray-500 mt-2">
-                    Completed: {new Date(task.completedAt).toLocaleString()}
+                  <div className="text-xs text-gray-400 mt-1">
+                    {new Date(task.completedAt).toLocaleDateString()}
                   </div>
                 )}
               </div>
+              
+              {showActions && !isCompleted && (
+                <div className="flex items-start gap-1">
+                  {/* Primary actions - always visible on hover, calendar always visible if selected */}
+                  <div className={`flex gap-1 transition-opacity ${
+                    isHovered || selectedForToday.includes(task.id) ? 'opacity-100' : 'opacity-0'
+                  }`}>
+                    <button
+                      onClick={() => completeTask(task.id)}
+                      className={`p-1 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors ${
+                        !isHovered && selectedForToday.includes(task.id) ? 'opacity-0' : 'opacity-100'
+                      }`}
+                      title="Complete task"
+                    >
+                      <Check size={16} />
+                    </button>
+                    
+                    <button
+                      onClick={() => toggleTaskForToday(task.id)}
+                      className={`p-1 rounded transition-colors ${
+                        selectedForToday.includes(task.id)
+                          ? 'text-blue-600 bg-blue-50'
+                          : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'
+                      }`}
+                      title={selectedForToday.includes(task.id) ? 'Remove from today' : 'Add to today'}
+                    >
+                      <Calendar size={16} />
+                    </button>
+                  </div>
+                  
+                  {/* More actions menu */}
+                  <div className="relative" ref={menuRef}>
+                    <button
+                      onClick={() => setShowMenu(!showMenu)}
+                      className={`p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-all ${
+                        showMenu ? 'bg-gray-100 text-gray-600' : ''
+                      } ${
+                        isHovered ? 'opacity-100' : 'opacity-0'
+                      }`}
+                    >
+                      <MoreVertical size={16} />
+                    </button>
+                    
+                    {showMenu && (
+                      <div className="absolute right-0 top-8 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-10">
+                        <button
+                          onClick={() => {
+                            startEditing(task);
+                            setShowMenu(false);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <Edit3 size={14} /> Edit
+                        </button>
+                        
+                        <button
+                          onClick={() => {
+                            startAddingSubTask(task);
+                            setShowMenu(false);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <Plus size={14} /> Add sub-task
+                        </button>
+                        
+                        <div className="border-t border-gray-100 my-1"></div>
+                        
+                        <button
+                          onClick={() => {
+                            createJiraTicket(task);
+                            setShowMenu(false);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <ExternalLink size={14} /> Create JIRA ticket
+                        </button>
+                        
+                        <button
+                          onClick={() => {
+                            copyTaskToJira(task);
+                            setShowMenu(false);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <FileText size={14} /> Copy JIRA payload
+                        </button>
+                        
+                        <div className="border-t border-gray-100 my-1"></div>
+                        
+                        <button
+                          onClick={() => {
+                            deleteTask(task.id);
+                            setShowMenu(false);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                        >
+                          <Trash2 size={14} /> Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
-            
-            {showActions && !isCompleted && (
-              <div className="flex gap-2 flex-wrap">
-                <button
-                  onClick={() => toggleTaskForToday(task.id)}
-                  className={`flex items-center gap-1 px-3 py-1 rounded text-sm transition-colors ${
-                    selectedForToday.includes(task.id)
-                      ? 'bg-blue-600 text-white hover:bg-blue-700'
-                      : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-                  }`}
-                >
-                  <Calendar size={16} />
-                  {selectedForToday.includes(task.id) ? 'Remove from Today' : 'Add to Today'}
-                </button>
-                
-                <button
-                  onClick={() => completeTask(task.id)}
-                  className="flex items-center gap-1 px-3 py-1 bg-green-100 text-green-700 rounded text-sm hover:bg-green-200 transition-colors"
-                >
-                  <CheckSquare size={16} /> Complete
-                </button>
-                
-                <button
-                  onClick={() => startEditing(task)}
-                  className="flex items-center gap-1 px-3 py-1 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 transition-colors"
-                >
-                  <Edit3 size={16} /> Edit
-                </button>
-                
-                <button
-                  onClick={() => startAddingSubTask(task)}
-                  className="flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded text-sm hover:bg-purple-200 transition-colors"
-                >
-                  <Plus size={16} /> Add Sub-task
-                </button>
-                
-                <button
-                  onClick={() => createJiraTicket(task)}
-                  className="flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-700 rounded text-sm hover:bg-blue-200 transition-colors"
-                >
-                  <ExternalLink size={16} /> Create JIRA Ticket
-                </button>
-                
-                <button
-                  onClick={() => copyTaskToJira(task)}
-                  className="flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-700 rounded text-sm hover:bg-orange-200 transition-colors"
-                >
-                  <ExternalLink size={16} /> Copy to Console
-                </button>
-                
-                <button
-                  onClick={() => deleteTask(task.id)}
-                  className="flex items-center gap-1 px-3 py-1 bg-red-100 text-red-700 rounded text-sm hover:bg-red-200 transition-colors"
-                >
-                  <Trash2 size={16} /> Delete
-                </button>
-              </div>
-            )}
             
             {/* Sub-task creation UI */}
             {addingSubTaskTo === task.id && (
-              <div className="mt-4 p-3 bg-gray-50 rounded border border-gray-200">
-                <div className="text-sm text-gray-600 mb-2 font-medium">
-                  Adding sub-task to: "{task.text}"
-                </div>
+              <div className="mt-2 ml-6">
                 <div className="flex gap-2">
-                  <textarea
+                  <input
                     ref={subtaskInputRef}
+                    type="text"
                     value={subTaskTexts[task.id] || ''}
                     onChange={(e) => updateSubTaskText(task.id, e.target.value)}
-                    placeholder="Enter sub-task description..."
-                    className="flex-1 p-2 border border-gray-300 rounded resize-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-                    rows="2"
+                    placeholder="Enter sub-task..."
+                    className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && e.ctrlKey) {
+                      if (e.key === 'Enter') {
                         addSubTask(task);
+                      }
+                      if (e.key === 'Escape') {
+                        cancelAddingSubTask(task.id);
                       }
                     }}
                   />
-                  <div className="flex flex-col gap-1">
-                    <button
-                      onClick={() => addSubTask(task)}
-                      className="px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors flex items-center gap-1"
-                    >
-                      <Plus size={14} />
-                      Add
-                    </button>
-                    <button
-                      onClick={() => cancelAddingSubTask(task.id)}
-                      className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors flex items-center gap-1"
-                    >
-                      <X size={14} />
-                      Cancel
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => addSubTask(task)}
+                    className="px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => cancelAddingSubTask(task.id)}
+                    className="px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                  >
+                    Cancel
+                  </button>
                 </div>
-                <p className="text-xs text-gray-500 mt-1">Press Ctrl+Enter to add quickly</p>
               </div>
             )}
           </>
@@ -811,31 +1040,34 @@ const TaskManager = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-6xl mx-auto p-6">
-        <header className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Task Manager</h1>
-          <p className="text-gray-600">Plan your day, track progress, and maintain an audit trail</p>
+    <div className="min-h-screen bg-white">
+      <div className="max-w-4xl mx-auto px-4 py-6">
+        <header className="mb-6">
+          <div className="flex justify-between items-center">
+            <h1 className="text-2xl font-semibold text-gray-900">Tasks</h1>
+            <div className="text-xs text-gray-400">
+              <span className="hidden sm:inline">Press 1/2/3 to switch tabs, / to search</span>
+            </div>
+          </div>
         </header>
 
         {/* Navigation Tabs */}
-        <div className="mb-6 border-b border-gray-200">
-          <nav className="flex space-x-8">
+        <div className="mb-6 border-b border-gray-100">
+          <nav className="flex space-x-6">
             {[
-              { id: 'today', label: 'Today\'s Tasks', icon: Clock },
-              { id: 'all', label: 'All Tasks', icon: Plus },
-              { id: 'completed', label: 'Completed Tasks', icon: CheckSquare }
-            ].map(({ id, label, icon: Icon }) => (
+              { id: 'today', label: 'Today' },
+              { id: 'all', label: 'All' },
+              { id: 'completed', label: 'Completed' }
+            ].map(({ id, label }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}
-                className={`flex items-center gap-2 py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
+                className={`pb-2 text-sm font-medium transition-colors border-b-2 ${
                   activeTab === id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    ? 'border-gray-900 text-gray-900'
+                    : 'border-transparent text-gray-400 hover:text-gray-600'
                 }`}
               >
-                <Icon size={18} />
                 {label}
               </button>
             ))}
@@ -844,32 +1076,30 @@ const TaskManager = () => {
 
         {/* Today's Tasks Tab */}
         {activeTab === 'today' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">Today's Focus</h2>
+          <div className="space-y-4">
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Today's Focus</h2>
                 {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
                   <button
                     onClick={async () => {
                       const summary = await generateDailySummary(new Date().toLocaleDateString(), true);
                       setSummaryModal({ isOpen: true, content: summary, title: 'AI Summary for Today' });
                     }}
-                    className="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 transition-all flex items-center gap-2 shadow-sm"
+                    className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
                   >
-                    <BarChart3 size={16} />
-                    AI Summary for Today
+                    Generate summary
                   </button>
                 )}
               </div>
               
               {getTodaysTasks().length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <Clock size={48} className="mx-auto mb-4 opacity-50" />
-                  <p>No tasks selected for today</p>
-                  <p className="text-sm">Go to "All Tasks" to add tasks to your daily plan</p>
+                <div className="text-center py-12 text-gray-400">
+                  <p className="text-sm">No tasks for today</p>
+                  <p className="text-xs mt-1">Add tasks from the "All" tab</p>
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-1">
                   {getTodaysTasks().map(task => (
                     <TaskItem key={task.id} task={task} />
                   ))}
@@ -877,143 +1107,162 @@ const TaskManager = () => {
               )}
             </div>
 
-            <div className="bg-blue-50 rounded-lg border border-blue-200 p-6">
-              <h3 className="text-lg font-semibold text-blue-900 mb-3">Status Update</h3>
-              <div className="bg-white rounded p-4 border">
-                <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono">{generateStatusUpdate()}</pre>
+            {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
+              <div className="mt-8 pt-4 border-t border-gray-100">
+                <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide mb-3">Status Update</h3>
+                <div className="bg-gray-50 rounded p-3">
+                  <pre className="whitespace-pre-wrap text-sm text-gray-700">{generateStatusUpdate()}</pre>
+                </div>
+                <button
+                  onClick={() => navigator.clipboard.writeText(generateStatusUpdate())}
+                  className="mt-2 text-sm text-blue-600 hover:text-blue-700 transition-colors"
+                >
+                  Copy to clipboard
+                </button>
               </div>
-              <button
-                onClick={() => navigator.clipboard.writeText(generateStatusUpdate())}
-                className="mt-3 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-              >
-                Copy to Clipboard
-              </button>
-            </div>
+            )}
           </div>
         )}
 
         {/* All Tasks Tab */}
         {activeTab === 'all' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">Add New Task</h2>
+          <div className="space-y-4">
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Add Task</h2>
                 <button
                   onClick={() => setShowBulkImport(!showBulkImport)}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                  className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
                 >
-                  <FileText size={16} />
-                  {showBulkImport ? 'Single Task' : 'Bulk Import'}
+                  {showBulkImport ? 'Single' : 'Bulk'}
                 </button>
               </div>
               
               {!showBulkImport ? (
                 <>
-                  <div className="flex gap-3">
-                    <textarea
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
                       value={newTask}
                       onChange={(e) => setNewTask(e.target.value)}
-                      placeholder="Enter task description (supports markdown formatting)..."
-                      className="flex-1 p-3 border border-gray-300 rounded resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      rows="3"
+                      placeholder="What needs to be done?"
+                      className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && e.ctrlKey) {
+                        if (e.key === 'Enter') {
                           addTask();
                         }
                       }}
                     />
                     <button
                       onClick={addTask}
-                      className="px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors flex items-center gap-2"
+                      className="px-3 py-2 text-sm bg-gray-900 text-white rounded hover:bg-gray-800 transition-colors"
                     >
-                      <Plus size={20} />
-                      Add Task
+                      Add
                     </button>
                   </div>
-                  <p className="text-sm text-gray-500 mt-2">Press Ctrl+Enter to add quickly</p>
                 </>
               ) : (
                 <>
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     <textarea
                       value={bulkTasks}
                       onChange={(e) => setBulkTasks(e.target.value)}
-                      placeholder="Paste your hierarchical task list here:&#10;- Recapping the odie redesign sync&#10;    - List out questions asked from the meeting&#10;- Ei mysql proxy testing&#10;- Internal routing class&#10;- Espresso global index task&#10;    - Review features left&#10;    - Persistent chat tables creation&#10;    - Ramp plan"
-                      className="w-full p-3 border border-gray-300 rounded resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      rows="8"
+                      placeholder="Paste tasks (use indentation for sub-tasks)"
+                      className="w-full p-2 text-sm border border-gray-200 rounded resize-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                      rows="6"
                     />
-                    <div className="flex gap-3">
+                    <div className="flex gap-2">
                       <button
                         onClick={addBulkTasks}
-                        className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors flex items-center gap-2"
+                        className="px-3 py-1.5 text-sm bg-gray-900 text-white rounded hover:bg-gray-800 transition-colors"
                       >
-                        <Plus size={16} />
-                        Import All Tasks
+                        Import
                       </button>
                       <button
                         onClick={() => setBulkTasks('')}
-                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                        className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 transition-colors"
                       >
                         Clear
                       </button>
                     </div>
                   </div>
-                  <p className="text-sm text-gray-500 mt-2">
-                    Supports: • - * bullets, 1. 2) numbered lists. Use 4 spaces for indentation to create sub-tasks.
-                  </p>
                 </>
               )}
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">All Tasks ({tasks.length})</h2>
+            <div className="mt-6">
+              {/* Search bar for All Tasks */}
+              <div className="mb-4">
+                <div className="relative">
+                  <Search size={16} className="absolute left-2.5 top-2.5 text-gray-400" />
+                  <input
+                    type="text"
+                    value={allTasksSearchTerm}
+                    onChange={(e) => setAllTasksSearchTerm(e.target.value)}
+                    placeholder="Search tasks..."
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
+                  All Tasks ({allTasksSearchTerm ? `${getFilteredAllTasks().length} of ${tasks.length}` : tasks.length})
+                </h2>
                 
                 {tasks.length > 0 && (
                   <div className="flex gap-2 items-center">
                     {selectedTasks.length > 0 && (
-                      <span className="text-sm text-gray-600 mr-2">
+                      <span className="text-xs text-gray-400 mr-2">
                         {selectedTasks.length} selected
                       </span>
                     )}
                     
                     <button
                       onClick={selectedTasks.length === tasks.length ? deselectAllTasks : selectAllTasks}
-                      className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+                      className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
                     >
-                      {selectedTasks.length === tasks.length ? 'Deselect All' : 'Select All'}
+                      {selectedTasks.length === tasks.length ? 'Deselect all' : 'Select all'}
                     </button>
                     
                     {selectedTasks.length > 0 && (
                       <button
                         onClick={deleteSelectedTasks}
-                        className="px-3 py-1 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors flex items-center gap-1"
+                        className="text-xs text-red-500 hover:text-red-600 transition-colors"
                       >
-                        <Trash2 size={14} />
-                        Delete Selected ({selectedTasks.length})
+                        Delete selected
                       </button>
                     )}
                     
-                    <button
-                      onClick={deleteAllTasks}
-                      className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-1"
-                    >
-                      <Trash2 size={14} />
-                      Delete All
-                    </button>
+                    {tasks.length > 5 && (
+                      <button
+                        onClick={deleteAllTasks}
+                        className="text-xs text-red-500 hover:text-red-600 transition-colors"
+                      >
+                        Delete all
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
               
               {tasks.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <Plus size={48} className="mx-auto mb-4 opacity-50" />
-                  <p>No tasks yet</p>
-                  <p className="text-sm">Add your first task above to get started</p>
+                <div className="text-center py-12 text-gray-400">
+                  <p className="text-sm">No tasks yet</p>
+                </div>
+              ) : getFilteredAllTasks().length === 0 ? (
+                <div className="text-center py-12 text-gray-400">
+                  <p className="text-sm">No tasks found matching "{allTasksSearchTerm}"</p>
+                  <button
+                    onClick={() => setAllTasksSearchTerm('')}
+                    className="text-xs mt-2 text-blue-600 hover:text-blue-700 transition-colors"
+                  >
+                    Clear search
+                  </button>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {getSortedTasks().map(task => (
+                <div className="space-y-1">
+                  {getFilteredAllTasks().map(task => (
                     <TaskItem key={task.id} task={task} showCheckbox={true} />
                   ))}
                 </div>
@@ -1024,21 +1273,20 @@ const TaskManager = () => {
 
         {/* Completed Tasks Tab */}
         {activeTab === 'completed' && (
-          <div className="space-y-6">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">Search Completed Tasks</h2>
-                <div className="flex gap-2">
+          <div className="space-y-4">
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Completed Tasks</h2>
+                <div className="flex gap-3">
                   {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
                     <button
                       onClick={async () => {
                         const summary = await generateDailySummary(new Date().toLocaleDateString(), true);
                         setSummaryModal({ isOpen: true, content: summary, title: 'Daily Summary' });
                       }}
-                      className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded hover:from-purple-700 hover:to-blue-700 transition-all flex items-center gap-2 text-sm"
+                      className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
                     >
-                      <BarChart3 size={14} />
-                      Today's Summary
+                      Today's summary
                     </button>
                   )}
                   <button
@@ -1046,123 +1294,45 @@ const TaskManager = () => {
                       const summary = await generateWeeklySummary();
                       setSummaryModal({ isOpen: true, content: summary, title: 'Weekly Summary' });
                     }}
-                    className="px-3 py-1.5 bg-gradient-to-r from-green-600 to-teal-600 text-white rounded hover:from-green-700 hover:to-teal-700 transition-all flex items-center gap-2 text-sm"
+                    className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
                   >
-                    <BarChart3 size={14} />
-                    Weekly Summary
+                    Weekly summary
                   </button>
                 </div>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="relative">
-                  <Search size={20} className="absolute left-3 top-3 text-gray-400" />
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search size={16} className="absolute left-2.5 top-2.5 text-gray-400" />
                   <input
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Search completed tasks..."
-                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Search..."
+                    className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
                   />
                 </div>
                 
-                <div className="relative">
-                  <Filter size={20} className="absolute left-3 top-3 text-gray-400" />
-                  <input
-                    type="date"
-                    value={dateFilter}
-                    onChange={(e) => setDateFilter(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                />
               </div>
             </div>
 
-            <div className="bg-blue-50 rounded-lg shadow-sm border border-blue-200 p-6">
-              <h2 className="text-xl font-semibold text-blue-900 mb-4 flex items-center gap-2">
-                <BarChart3 size={20} />
-                Task Summary
-              </h2>
-              
-              <div className="space-y-4">
-                <div className="flex gap-3 flex-wrap">
-                  <button
-                    onClick={async () => {
-                      setDisplayedSummary({ content: 'Generating AI summary...', type: 'daily' });
-                      const summary = await generateDailySummary(null, true);
-                      setDisplayedSummary({ content: summary, type: 'daily' });
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                  >
-                    <Calendar size={16} />
-                    Today's Summary
-                  </button>
-                  
-                  <button
-                    onClick={async () => {
-                      setDisplayedSummary({ content: 'Generating...', type: 'weekly' });
-                      const summary = await generateWeeklySummary();
-                      setDisplayedSummary({ content: summary, type: 'weekly' });
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-                  >
-                    <BarChart3 size={16} />
-                    This Week's Summary
-                  </button>
-                  
-                  {dateFilter && (
-                    <button
-                      onClick={async () => {
-                        setDisplayedSummary({ content: 'Generating AI summary...', type: 'custom' });
-                        const [year, month, day] = dateFilter.split('-');
-                        const targetDate = new Date(year, month - 1, day, 12, 0, 0).toLocaleDateString();
-                        const summary = await generateDailySummary(targetDate, true);
-                        setDisplayedSummary({ content: summary, type: 'custom' });
-                      }}
-                      className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors"
-                    >
-                      <Calendar size={16} />
-                      Summary for {dateFilter}
-                    </button>
-                  )}
-                </div>
-                
-                {displayedSummary.content && (
-                  <div className="mt-4 space-y-2">
-                    <div className="bg-white rounded-lg p-4 border border-blue-200">
-                      <pre className="whitespace-pre-wrap text-sm text-gray-800 font-sans">{displayedSummary.content}</pre>
-                    </div>
-                    <div className="flex justify-end">
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(displayedSummary.content);
-                          alert('Summary copied to clipboard!');
-                        }}
-                        className="text-sm px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
-                      >
-                        Copy to Clipboard
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                Completed Tasks ({getFilteredCompletedTasks().length})
-              </h2>
-              
+            <div className="mt-4">
               {getFilteredCompletedTasks().length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <CheckSquare size={48} className="mx-auto mb-4 opacity-50" />
-                  <p>No completed tasks found</p>
+                <div className="text-center py-12 text-gray-400">
+                  <p className="text-sm">No completed tasks found</p>
                   {(searchTerm || dateFilter) && (
-                    <p className="text-sm">Try adjusting your search filters</p>
+                    <p className="text-xs mt-1">Try adjusting your filters</p>
                   )}
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-1">
                   {getFilteredCompletedTasks().map(task => (
                     <TaskItem key={task.id} task={task} showActions={false} isCompleted={true} />
                   ))}
@@ -1175,25 +1345,32 @@ const TaskManager = () => {
 
       {/* Summary Modal */}
       {summaryModal.isOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[80vh] overflow-hidden">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex justify-between items-start">
-                <h3 className="text-2xl font-bold text-gray-900">{summaryModal.title}</h3>
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden">
+            <div className="p-4 border-b border-gray-100">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-medium text-gray-900">{summaryModal.title}</h3>
                 <button
                   onClick={() => setSummaryModal({ isOpen: false, content: '', title: '' })}
-                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  className="p-1 hover:bg-gray-100 rounded transition-colors"
                 >
-                  <X size={20} />
+                  <X size={18} />
                 </button>
               </div>
             </div>
-            <div className="p-6 overflow-y-auto max-h-[60vh]">
-              <div className="prose prose-sm max-w-none">
-                {summaryModal.content.split('\n').map((line, i) => (
-                  <p key={i} className="mb-2">{line}</p>
-                ))}
-              </div>
+            <div className="p-4 overflow-y-auto max-h-[60vh]">
+              <pre className="whitespace-pre-wrap text-sm text-gray-700">{summaryModal.content}</pre>
+            </div>
+            <div className="p-4 border-t border-gray-100 flex justify-end">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(summaryModal.content);
+                  alert('Summary copied to clipboard!');
+                }}
+                className="px-3 py-1.5 text-sm bg-gray-900 text-white rounded hover:bg-gray-800 transition-colors"
+              >
+                Copy to clipboard
+              </button>
             </div>
           </div>
         </div>

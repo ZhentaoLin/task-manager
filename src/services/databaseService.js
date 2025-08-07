@@ -51,6 +51,30 @@ class DatabaseService {
     }
 
     try {
+      // First, get all existing task IDs from the database
+      const { data: existingTasks, error: fetchError } = await this.supabase
+        .from('tasks')
+        .select('id');
+      
+      if (fetchError) throw fetchError;
+      
+      // Find tasks that exist in the database but not in the current state
+      const currentTaskIds = tasks.map(t => t.id);
+      const existingTaskIds = (existingTasks || []).map(t => t.id);
+      const tasksToDelete = existingTaskIds.filter(id => !currentTaskIds.includes(id));
+      
+      // Delete tasks that are no longer in the current state
+      if (tasksToDelete.length > 0) {
+        const { error: deleteError } = await this.supabase
+          .from('tasks')
+          .delete()
+          .in('id', tasksToDelete);
+        
+        if (deleteError) throw deleteError;
+        console.log(`Deleted ${tasksToDelete.length} tasks from database`);
+      }
+      
+      // Now upsert the current tasks
       if (tasks.length > 0) {
         const { error } = await this.supabase
           .from('tasks')
@@ -66,9 +90,6 @@ class DatabaseService {
           });
         
         if (error) throw error;
-      } else {
-        // If no tasks, clear the table
-        await this.supabase.from('tasks').delete().gt('id', 0);
       }
     } catch (error) {
       console.error('Error saving tasks:', error);
@@ -112,6 +133,30 @@ class DatabaseService {
     }
 
     try {
+      // First, get all existing completed task IDs from the database
+      const { data: existingCompletedTasks, error: fetchError } = await this.supabase
+        .from('completed_tasks')
+        .select('id');
+      
+      if (fetchError) throw fetchError;
+      
+      // Find completed tasks that exist in the database but not in the current state
+      const currentCompletedIds = completedTasks.map(t => t.id);
+      const existingCompletedIds = (existingCompletedTasks || []).map(t => t.id);
+      const completedToDelete = existingCompletedIds.filter(id => !currentCompletedIds.includes(id));
+      
+      // Delete completed tasks that are no longer in the current state
+      if (completedToDelete.length > 0) {
+        const { error: deleteError } = await this.supabase
+          .from('completed_tasks')
+          .delete()
+          .in('id', completedToDelete);
+        
+        if (deleteError) throw deleteError;
+        console.log(`Deleted ${completedToDelete.length} completed tasks from database`);
+      }
+      
+      // Now upsert the current completed tasks
       if (completedTasks.length > 0) {
         const { error } = await this.supabase
           .from('completed_tasks')
@@ -129,9 +174,6 @@ class DatabaseService {
           });
         
         if (error) throw error;
-      } else {
-        // If no completed tasks, clear the table
-        await this.supabase.from('completed_tasks').delete().gt('id', 0);
       }
     } catch (error) {
       console.error('Error saving completed tasks:', error);
