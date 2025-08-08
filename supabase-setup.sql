@@ -7,6 +7,9 @@ CREATE TABLE tasks (
   parent_id BIGINT,
   parent_text TEXT,
   level INTEGER DEFAULT 0,
+  description TEXT,
+  jira_ticket TEXT,
+  github_pr TEXT,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
@@ -17,6 +20,9 @@ CREATE TABLE completed_tasks (
   parent_id BIGINT,
   parent_text TEXT,
   level INTEGER DEFAULT 0,
+  description TEXT,
+  jira_ticket TEXT,
+  github_pr TEXT,
   completed_at TIMESTAMP WITH TIME ZONE NOT NULL,
   completed_date TEXT NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL

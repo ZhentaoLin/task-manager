@@ -37,6 +37,9 @@ class DatabaseService {
         parentId: task.parent_id,
         parentText: task.parent_text,
         level: task.level,
+        description: task.description,
+        jiraTicket: task.jira_ticket,
+        githubPr: task.github_pr,
         createdAt: task.created_at
       }));
     } catch (error) {
@@ -84,6 +87,9 @@ class DatabaseService {
             parent_id: task.parentId,
             parent_text: task.parentText,
             level: task.level || 0,
+            description: task.description || null,
+            jira_ticket: task.jiraTicket || null,
+            github_pr: task.githubPr || null,
             created_at: task.createdAt || new Date().toISOString()
           })), { 
             onConflict: 'id' 
@@ -117,6 +123,9 @@ class DatabaseService {
         parentId: task.parent_id,
         parentText: task.parent_text,
         level: task.level,
+        description: task.description,
+        jiraTicket: task.jira_ticket,
+        githubPr: task.github_pr,
         completedAt: task.completed_at,
         completedDate: task.completed_date,
         createdAt: task.created_at
@@ -166,6 +175,9 @@ class DatabaseService {
             parent_id: task.parentId,
             parent_text: task.parentText,
             level: task.level || 0,
+            description: task.description || null,
+            jira_ticket: task.jiraTicket || null,
+            github_pr: task.githubPr || null,
             completed_at: task.completedAt || new Date().toISOString(),
             completed_date: task.completedDate || new Date().toLocaleDateString(),
             created_at: task.createdAt || new Date().toISOString()
@@ -216,6 +228,76 @@ class DatabaseService {
       }
     } catch (error) {
       console.error('Error saving selected for today:', error);
+    }
+  }
+
+  // Daily highlight operations
+  async getTodayHighlight() {
+    if (!this.useDatabase) {
+      const localHighlight = localStorage.getItem('todayHighlight');
+      if (localHighlight) {
+        const parsed = JSON.parse(localHighlight);
+        const today = new Date().toDateString();
+        if (parsed.date === today) {
+          return parsed.taskId;
+        }
+      }
+      return null;
+    }
+
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { data, error } = await this.supabase
+        .from('daily_highlights')
+        .select('task_id')
+        .eq('date', today)
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error; // PGRST116 is "no rows returned"
+      return data ? data.task_id : null;
+    } catch (error) {
+      console.error('Error fetching today highlight:', error);
+      return null;
+    }
+  }
+
+  async saveTodayHighlight(taskId) {
+    const today = new Date().toDateString();
+    const todayISO = new Date().toISOString().split('T')[0];
+    
+    if (!this.useDatabase) {
+      if (taskId === null) {
+        localStorage.removeItem('todayHighlight');
+      } else {
+        localStorage.setItem('todayHighlight', JSON.stringify({
+          taskId,
+          date: today
+        }));
+      }
+      return;
+    }
+
+    try {
+      if (taskId === null) {
+        await this.supabase
+          .from('daily_highlights')
+          .delete()
+          .eq('date', todayISO);
+      } else {
+        const { error } = await this.supabase
+          .from('daily_highlights')
+          .upsert({
+            date: todayISO,
+            task_id: taskId,
+            created_at: new Date().toISOString()
+          }, {
+            onConflict: 'date'
+          });
+        
+        if (error) throw error;
+      }
+    } catch (error) {
+      console.error('Error saving today highlight:', error);
     }
   }
 

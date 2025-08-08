@@ -1,12 +1,390 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Calendar, Search, Trash2, Edit3, X, FileText, ExternalLink, MoreVertical, Check } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { Plus, Calendar, Search, Trash2, X, FileText, ExternalLink, MoreVertical, Check, ChevronDown, ChevronUp, Github, Ticket, Star } from 'lucide-react';
 import { aiService } from './services/aiService';
 import { databaseService } from './services/databaseService';
+
+// Extract TaskItem component outside to prevent recreation on every render
+const TaskItem = memo(({ 
+  task, 
+  showActions = true, 
+  isCompleted = false, 
+  showCheckbox = false,
+  selectedTasks,
+  selectedForToday,
+  highlightTaskId,
+  editingTask,
+  editText,
+  editDescription,
+  editJiraTicket,
+  editGithubPr,
+  addingSubTaskTo,
+  subTaskTexts,
+  onToggleTaskSelection,
+  onCompleteTask,
+  onToggleTaskForToday,
+  onSetHighlight,
+  onStartEditing,
+  onSaveEdit,
+  onCancelEdit,
+  onSetEditText,
+  onSetEditDescription,
+  onSetEditJiraTicket,
+  onSetEditGithubPr,
+  onStartAddingSubTask,
+  onCancelAddingSubTask,
+  onUpdateSubTaskText,
+  onAddSubTask,
+  onDeleteTask,
+  onCreateJiraTicket,
+  onCopyTaskToJira
+}) => {
+  const subtaskInputRef = useRef(null);
+  const [showMenu, setShowMenu] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const menuRef = useRef(null);
+  const indentationStyle = {
+    marginLeft: `${(task.level || 0) * 20}px`
+  };
+  
+  const hasDetails = task.description || task.jiraTicket || task.githubPr;
+  const isHighlight = highlightTaskId === task.id;
+
+  // Auto-focus when sub-task input appears
+  useEffect(() => {
+    if (addingSubTaskTo === task.id && subtaskInputRef.current) {
+      const input = subtaskInputRef.current;
+      input.focus();
+      // Set cursor to end of text
+      const length = input.value.length;
+      input.setSelectionRange(length, length);
+    }
+  }, [addingSubTaskTo, task.id]);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setShowMenu(false);
+      }
+    };
+    if (showMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showMenu]);
+
+  return (
+    <div 
+      className={`group relative py-2 px-3 rounded ${
+        isHighlight && !isCompleted 
+          ? 'bg-gradient-to-r from-yellow-50 to-amber-50 border-l-4 border-yellow-400' 
+          : isCompleted 
+          ? 'bg-gray-50' 
+          : 'hover:bg-gray-50'
+      } transition-all`}
+      style={indentationStyle}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <>
+          <div className="flex items-start gap-2">
+            {showCheckbox && (
+              <input
+                type="checkbox"
+                checked={selectedTasks.includes(task.id)}
+                onChange={() => onToggleTaskSelection(task.id)}
+                className="mt-0.5 h-3.5 w-3.5 text-blue-600 focus:ring-1 focus:ring-blue-500 border-gray-300 rounded"
+              />
+            )}
+            <div className="flex-1 min-w-0">
+              {task.parentText && (
+                <div className="text-xs text-gray-400 mb-0.5">
+                  {task.parentText}
+                </div>
+              )}
+              {editingTask === task.id ? (
+                <div className="flex-1 space-y-2">
+                  <input
+                    type="text"
+                    value={editText}
+                    onChange={(e) => onSetEditText(e.target.value)}
+                    className="w-full px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                    placeholder="Task title"
+                  />
+                  <textarea
+                    value={editDescription}
+                    onChange={(e) => onSetEditDescription(e.target.value)}
+                    className="w-full px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none resize-none"
+                    placeholder="Description (optional)"
+                    rows="2"
+                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={editJiraTicket}
+                      onChange={(e) => onSetEditJiraTicket(e.target.value)}
+                      className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                      placeholder="JIRA ticket (e.g., ABC-123)"
+                    />
+                    <input
+                      type="text"
+                      value={editGithubPr}
+                      onChange={(e) => onSetEditGithubPr(e.target.value)}
+                      className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                      placeholder="GitHub PR (e.g., #123)"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onSaveEdit(task.id)}
+                      className="px-2 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={onCancelEdit}
+                      className="px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <div 
+                      className={`text-sm px-2 py-0.5 rounded transition-all ${
+                        isCompleted 
+                          ? 'text-gray-400 line-through' 
+                          : 'text-gray-900 cursor-text hover:bg-gray-50'
+                      }`}
+                      onClick={() => {
+                        if (!isCompleted && showActions) {
+                          onStartEditing(task);
+                        }
+                      }}
+                    >
+                      {task.text}
+                    </div>
+                    
+                    {/* Badges for links */}
+                    {task.jiraTicket && (
+                      <a 
+                        href={task.jiraTicket.startsWith('http') ? task.jiraTicket : `https://linkedin.atlassian.net/browse/${task.jiraTicket}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition-colors"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Ticket size={10} />
+                        {task.jiraTicket.replace(/^https?:\/\/[^\/]+\/browse\//, '')}
+                      </a>
+                    )}
+                    
+                    {task.githubPr && (
+                      <a 
+                        href={task.githubPr.startsWith('http') ? task.githubPr : `https://github.com/${task.githubPr}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs bg-gray-800 text-white rounded hover:bg-gray-900 transition-colors"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Github size={10} />
+                        {task.githubPr.replace(/^https?:\/\/github\.com\//, '').replace(/\/pull\//, '#')}
+                      </a>
+                    )}
+                    
+                    {!isCompleted && selectedForToday.includes(task.id) && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">
+                        Today
+                      </span>
+                    )}
+                    
+                    {hasDetails && !isCompleted && (
+                      <button
+                        onClick={() => setIsExpanded(!isExpanded)}
+                        className="p-0.5 text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Description */}
+                  {isExpanded && task.description && (
+                    <div className="mt-2 ml-2 p-2 text-sm text-gray-600 bg-gray-50 rounded">
+                      {task.description.split('\n').map((line, i) => (
+                        <div key={i}>{line}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {isCompleted && (
+                <div className="text-xs text-gray-400 mt-1">
+                  {new Date(task.completedAt).toLocaleDateString()}
+                </div>
+              )}
+            </div>
+            
+            {showActions && !isCompleted && (
+              <div className="flex items-start gap-1">
+                {/* Primary actions - always visible on hover, calendar always visible if selected */}
+                <div className={`flex gap-1 transition-opacity ${
+                  isHovered || selectedForToday.includes(task.id) || isHighlight ? 'opacity-100' : 'opacity-0'
+                }`}>
+                  <button
+                    onClick={() => onCompleteTask(task.id)}
+                    className={`p-1 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors ${
+                      !isHovered && (selectedForToday.includes(task.id) || isHighlight) ? 'opacity-0' : 'opacity-100'
+                    }`}
+                    title="Complete task"
+                  >
+                    <Check size={16} />
+                  </button>
+                  
+                  {selectedForToday.includes(task.id) && onSetHighlight && (
+                    <button
+                      onClick={() => onSetHighlight(isHighlight ? null : task.id)}
+                      className={`p-1 rounded transition-colors ${
+                        isHighlight
+                          ? 'text-yellow-600 bg-yellow-50'
+                          : 'text-gray-400 hover:text-yellow-600 hover:bg-yellow-50'
+                      }`}
+                      title={isHighlight ? 'Remove highlight' : 'Set as today\'s highlight'}
+                    >
+                      <Star size={16} fill={isHighlight ? 'currentColor' : 'none'} />
+                    </button>
+                  )}
+                  
+                  <button
+                    onClick={() => onToggleTaskForToday(task.id)}
+                    className={`p-1 rounded transition-colors ${
+                      selectedForToday.includes(task.id)
+                        ? 'text-blue-600 bg-blue-50'
+                        : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'
+                    }`}
+                    title={selectedForToday.includes(task.id) ? 'Remove from today' : 'Add to today'}
+                  >
+                    <Calendar size={16} />
+                  </button>
+                </div>
+                
+                {/* More actions menu */}
+                <div className="relative" ref={menuRef}>
+                  <button
+                    onClick={() => setShowMenu(!showMenu)}
+                    className={`p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-all ${
+                      showMenu ? 'bg-gray-100 text-gray-600' : ''
+                    } ${
+                      isHovered ? 'opacity-100' : 'opacity-0'
+                    }`}
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+                  
+                  {showMenu && (
+                    <div className="absolute right-0 top-8 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-10">
+                      <button
+                        onClick={() => {
+                          onStartAddingSubTask(task);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <Plus size={14} /> Add sub-task
+                      </button>
+                      
+                      <div className="border-t border-gray-100 my-1"></div>
+                      
+                      <button
+                        onClick={() => {
+                          onCreateJiraTicket(task);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <ExternalLink size={14} /> Create JIRA ticket
+                      </button>
+                      
+                      <button
+                        onClick={() => {
+                          onCopyTaskToJira(task);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <FileText size={14} /> Copy JIRA payload
+                      </button>
+                      
+                      <div className="border-t border-gray-100 my-1"></div>
+                      
+                      <button
+                        onClick={() => {
+                          onDeleteTask(task.id);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                      >
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          
+          {/* Sub-task creation UI */}
+          {addingSubTaskTo === task.id && (
+            <div className="mt-2 ml-6">
+              <div className="flex gap-2">
+                <input
+                  ref={subtaskInputRef}
+                  type="text"
+                  value={subTaskTexts[task.id] || ''}
+                  onChange={(e) => onUpdateSubTaskText(task.id, e.target.value)}
+                  placeholder="Enter sub-task..."
+                  className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      onAddSubTask(task);
+                    }
+                    if (e.key === 'Escape') {
+                      onCancelAddingSubTask(task.id);
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => onAddSubTask(task)}
+                  className="px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                >
+                  Add
+                </button>
+                <button
+                  onClick={() => onCancelAddingSubTask(task.id)}
+                  className="px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+    </div>
+  );
+});
+
+TaskItem.displayName = 'TaskItem';
 
 const TaskManager = () => {
   const [tasks, setTasks] = useState([]);
   const [completedTasks, setCompletedTasks] = useState([]);
   const [selectedForToday, setSelectedForToday] = useState([]);
+  const [highlightTaskId, setHighlightTaskId] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [newTask, setNewTask] = useState('');
   const [bulkTasks, setBulkTasks] = useState('');
@@ -14,6 +392,9 @@ const TaskManager = () => {
   const [selectedTasks, setSelectedTasks] = useState([]);
   const [editingTask, setEditingTask] = useState(null);
   const [editText, setEditText] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editJiraTicket, setEditJiraTicket] = useState('');
+  const [editGithubPr, setEditGithubPr] = useState('');
   const [addingSubTaskTo, setAddingSubTaskTo] = useState(null);
   const [subTaskTexts, setSubTaskTexts] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
@@ -27,6 +408,9 @@ const TaskManager = () => {
     const handleKeyDown = (e) => {
       // Skip if user is typing in an input/textarea
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      
+      // Skip all shortcuts if currently editing a task
+      if (editingTask !== null) return;
       
       // Tab navigation shortcuts
       if (e.key === '1' && !e.ctrlKey && !e.metaKey) {
@@ -47,6 +431,16 @@ const TaskManager = () => {
         if (input) input.focus();
       }
       
+      // Highlight shortcut - h key to set first selected task as highlight
+      if (e.key === 'h' && activeTab === 'today' && selectedTasks.length > 0) {
+        e.preventDefault();
+        const firstSelectedTask = selectedTasks[0];
+        // Only set as highlight if the task is in today's list
+        if (selectedForToday.includes(firstSelectedTask)) {
+          setHighlightTaskId(highlightTaskId === firstSelectedTask ? null : firstSelectedTask);
+        }
+      }
+      
       // Search shortcut
       if (e.key === '/') {
         e.preventDefault();
@@ -62,7 +456,7 @@ const TaskManager = () => {
     
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [activeTab]);
+  }, [activeTab, editingTask, selectedTasks, selectedForToday, highlightTaskId]);
 
   // Load data on component mount
   useEffect(() => {
@@ -70,21 +464,24 @@ const TaskManager = () => {
       console.log('Loading data from database...');
       
       try {
-        const [loadedTasks, loadedCompleted, loadedToday] = await Promise.all([
+        const [loadedTasks, loadedCompleted, loadedToday, loadedHighlight] = await Promise.all([
           databaseService.getTasks(),
           databaseService.getCompletedTasks(),
-          databaseService.getSelectedForToday()
+          databaseService.getSelectedForToday(),
+          databaseService.getTodayHighlight()
         ]);
         
         console.log('Loaded data:', { 
           tasks: loadedTasks.length, 
           completed: loadedCompleted.length, 
-          today: loadedToday.length 
+          today: loadedToday.length,
+          highlight: loadedHighlight
         });
         
         setTasks(loadedTasks);
         setCompletedTasks(loadedCompleted);
         setSelectedForToday(loadedToday);
+        setHighlightTaskId(loadedHighlight);
         
       } catch (error) {
         console.error('Error loading data:', error);
@@ -119,20 +516,76 @@ const TaskManager = () => {
     }
   }, [selectedForToday, isLoaded]);
 
+  useEffect(() => {
+    if (isLoaded) {
+      console.log('Saving highlight:', highlightTaskId);
+      databaseService.saveTodayHighlight(highlightTaskId);
+    }
+  }, [highlightTaskId, isLoaded]);
+
   const parseBulkTasks = (text) => {
-    const lines = text.split('\n').filter(line => line.trim());
+    const lines = text.split('\n');
     const tasks = [];
     const stack = []; // Stack to keep track of parent tasks
+    let currentTask = null;
+    let collectingDescription = false;
     
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Skip empty lines unless we're collecting description
+      if (!line.trim() && !collectingDescription) continue;
+      
+      // Check if this is a description line (starts with >)
+      if (line.trim().startsWith('>')) {
+        if (currentTask) {
+          const descLine = line.trim().substring(1).trim();
+          if (!currentTask.description) {
+            currentTask.description = descLine;
+          } else {
+            currentTask.description += '\n' + descLine;
+          }
+        }
+        continue;
+      }
+      
+      // Check for metadata tags [JIRA: xxx] [PR: xxx]
+      const jiraMatch = line.match(/\[JIRA:\s*([^\]]+)\]/i);
+      const prMatch = line.match(/\[PR:\s*([^\]]+)\]/i);
+      
+      if ((jiraMatch || prMatch) && currentTask) {
+        if (jiraMatch) currentTask.jiraTicket = jiraMatch[1].trim();
+        if (prMatch) currentTask.githubPr = prMatch[1].trim();
+        
+        // Remove the tags from the text if they're on the same line as the task
+        if (currentTask && i === tasks.indexOf(currentTask)) {
+          currentTask.text = currentTask.text
+            .replace(/\[JIRA:\s*[^\]]+\]/gi, '')
+            .replace(/\[PR:\s*[^\]]+\]/gi, '')
+            .trim();
+        }
+        continue;
+      }
+      
       // Count indentation level (spaces or tabs)
       const indentMatch = line.match(/^(\s*)/);
       const indentLevel = indentMatch ? Math.floor(indentMatch[1].length / 4) : 0; // 4 spaces = 1 level
       
       // Remove common bullet point formats and indentation
-      const cleaned = line.trim().replace(/^[-*•]\s*/, '').replace(/^\d+[.)]\s*/, '').trim();
+      let cleaned = line.trim()
+        .replace(/^[-*•]\s*/, '')
+        .replace(/^\d+[.)]\s*/, '')
+        .replace(/\[JIRA:\s*[^\]]+\]/gi, '')
+        .replace(/\[PR:\s*[^\]]+\]/gi, '')
+        .trim();
       
       if (cleaned) {
+        // Save previous task if exists
+        if (currentTask) {
+          tasks.push(currentTask);
+          stack.push({ id: tasks.length - 1, text: currentTask.text });
+        }
+        
         // Adjust stack to current indentation level
         while (stack.length > indentLevel) {
           stack.pop();
@@ -141,16 +594,21 @@ const TaskManager = () => {
         const parentId = stack.length > 0 ? stack[stack.length - 1].id : null;
         const parentText = stack.length > 0 ? stack[stack.length - 1].text : null;
         
-        const task = {
+        currentTask = {
           text: cleaned,
           parentId,
           parentText,
-          level: indentLevel
+          level: indentLevel,
+          description: null,
+          jiraTicket: jiraMatch ? jiraMatch[1].trim() : null,
+          githubPr: prMatch ? prMatch[1].trim() : null
         };
-        
-        tasks.push(task);
-        stack.push({ id: tasks.length - 1, text: cleaned }); // Use index as temp ID
       }
+    }
+    
+    // Don't forget the last task
+    if (currentTask) {
+      tasks.push(currentTask);
     }
     
     return tasks;
@@ -164,7 +622,10 @@ const TaskManager = () => {
         createdAt: new Date().toISOString(),
         parentId: null,
         parentText: null,
-        level: 0
+        level: 0,
+        description: null,
+        jiraTicket: null,
+        githubPr: null
       };
       setTasks([...tasks, task]);
       setNewTask('');
@@ -187,6 +648,9 @@ const TaskManager = () => {
           parentId: realParentId,
           parentText: taskData.parentText,
           level: taskData.level,
+          description: taskData.description || null,
+          jiraTicket: taskData.jiraTicket || null,
+          githubPr: taskData.githubPr || null,
           createdAt: new Date().toISOString()
         };
         
@@ -204,6 +668,10 @@ const TaskManager = () => {
     setTasks(tasks.filter(t => t.id !== taskId));
     setSelectedForToday(selectedForToday.filter(id => id !== taskId));
     setSelectedTasks(selectedTasks.filter(id => id !== taskId));
+    // Clear highlight if the deleted task was highlighted
+    if (highlightTaskId === taskId) {
+      setHighlightTaskId(null);
+    }
   };
 
   const toggleTaskSelection = (taskId) => {
@@ -246,6 +714,9 @@ const TaskManager = () => {
         parentId: parentTask.id,
         parentText: parentTask.text,
         level: (parentTask.level || 0) + 1,
+        description: null,
+        jiraTicket: null,
+        githubPr: null,
         createdAt: new Date().toISOString()
       };
       
@@ -280,7 +751,15 @@ const TaskManager = () => {
 
   const buildJiraPayload = (task) => {
     const summary = task.parentText ? `${task.parentText} - ${task.text}` : task.text;
-    const description = task.parentText ? `Parent Task: ${task.parentText}\n\n${task.text}` : task.text;
+    
+    // Build description with task details
+    let descriptionText = task.description || task.text;
+    if (task.parentText) {
+      descriptionText = `Parent Task: ${task.parentText}\n\n${descriptionText}`;
+    }
+    if (task.githubPr) {
+      descriptionText += `\n\nGitHub PR: ${task.githubPr}`;
+    }
     
     return {
       "fields": {
@@ -299,7 +778,7 @@ const TaskManager = () => {
             "type": "paragraph",
             "content": [{
               "type": "text",
-              "text": description
+              "text": descriptionText
             }]
           }]
         },
@@ -403,23 +882,44 @@ const TaskManager = () => {
     }
   };
 
-  const startEditing = (task) => {
+  const startEditing = useCallback((task) => {
     setEditingTask(task.id);
     setEditText(task.text);
-  };
+    setEditDescription(task.description || '');
+    setEditJiraTicket(task.jiraTicket || '');
+    setEditGithubPr(task.githubPr || '');
+  }, []);
 
-  const saveEdit = () => {
-    setTasks(tasks.map(t => 
-      t.id === editingTask ? { ...t, text: editText } : t
+  const saveEdit = useCallback((taskId) => {
+    setTasks(prevTasks => prevTasks.map(t => 
+      t.id === taskId ? { 
+        ...t, 
+        text: editText,
+        description: editDescription || null,
+        jiraTicket: editJiraTicket || null,
+        githubPr: editGithubPr || null
+      } : t
     ));
     setEditingTask(null);
     setEditText('');
-  };
+    setEditDescription('');
+    setEditJiraTicket('');
+    setEditGithubPr('');
+  }, [editText, editDescription, editJiraTicket, editGithubPr]);
 
-  const cancelEdit = () => {
+  const cancelEdit = useCallback(() => {
     setEditingTask(null);
     setEditText('');
-  };
+    setEditDescription('');
+    setEditJiraTicket('');
+    setEditGithubPr('');
+  }, []);
+
+  // Wrap state setters in useCallback to prevent recreation
+  const handleSetEditText = useCallback((value) => setEditText(value), []);
+  const handleSetEditDescription = useCallback((value) => setEditDescription(value), []);
+  const handleSetEditJiraTicket = useCallback((value) => setEditJiraTicket(value), []);
+  const handleSetEditGithubPr = useCallback((value) => setEditGithubPr(value), []);
 
   const toggleTaskForToday = (taskId) => {
     const task = tasks.find(t => t.id === taskId);
@@ -475,8 +975,16 @@ const TaskManager = () => {
       setCompletedTasks([completedTask, ...completedTasks]);
       setTasks(tasks.filter(t => t.id !== taskId));
       setSelectedForToday(selectedForToday.filter(id => id !== taskId));
+      // Clear highlight if the completed task was highlighted
+      if (highlightTaskId === taskId) {
+        setHighlightTaskId(null);
+      }
     }
   };
+
+  const setHighlight = useCallback((taskId) => {
+    setHighlightTaskId(taskId);
+  }, []);
 
   const getTodaysTasks = () => {
     const todayTasks = tasks.filter(task => selectedForToday.includes(task.id));
@@ -582,6 +1090,9 @@ const TaskManager = () => {
     const targetDate = date || new Date().toLocaleDateString();
     const dayTasks = completedTasks.filter(task => task.completedDate === targetDate);
     
+    // Check if highlight was completed
+    const highlightCompleted = highlightTaskId && dayTasks.find(t => t.id === highlightTaskId);
+    
     if (dayTasks.length === 0) {
       return `No tasks completed on ${targetDate}.`;
     }
@@ -606,8 +1117,13 @@ const TaskManager = () => {
     // Fallback to basic summary
     const parentGroups = {};
     const standaloneTasks = [];
+    const allJiraTickets = [];
+    const allGithubPrs = [];
     
     dayTasks.forEach(task => {
+      if (task.jiraTicket) allJiraTickets.push(task.jiraTicket);
+      if (task.githubPr) allGithubPrs.push(task.githubPr);
+      
       if (task.parentText) {
         if (!parentGroups[task.parentText]) {
           parentGroups[task.parentText] = [];
@@ -619,13 +1135,23 @@ const TaskManager = () => {
     });
 
     let summary = `Daily Summary for ${targetDate}\n`;
-    summary += `Total completed: ${dayTasks.length} tasks\n\n`;
+    summary += `Total completed: ${dayTasks.length} tasks\n`;
+    if (highlightCompleted) {
+      summary += `✨ Highlight completed: ${highlightCompleted.text}\n`;
+    }
+    summary += `\n`;
 
     // Add grouped tasks
     Object.entries(parentGroups).forEach(([parent, tasks]) => {
       summary += `📋 ${parent}:\n`;
       tasks.forEach(task => {
-        summary += `  • ${task.text}\n`;
+        summary += `  • ${task.text}`;
+        if (task.jiraTicket) summary += ` [JIRA: ${task.jiraTicket}]`;
+        if (task.githubPr) summary += ` [PR: ${task.githubPr}]`;
+        summary += `\n`;
+        if (task.description) {
+          summary += `    ${task.description.replace(/\n/g, '\n    ')}\n`;
+        }
       });
       summary += `\n`;
     });
@@ -634,7 +1160,29 @@ const TaskManager = () => {
     if (standaloneTasks.length > 0) {
       summary += `📝 Other Tasks:\n`;
       standaloneTasks.forEach(task => {
-        summary += `  • ${task.text}\n`;
+        summary += `  • ${task.text}`;
+        if (task.jiraTicket) summary += ` [JIRA: ${task.jiraTicket}]`;
+        if (task.githubPr) summary += ` [PR: ${task.githubPr}]`;
+        summary += `\n`;
+        if (task.description) {
+          summary += `    ${task.description.replace(/\n/g, '\n    ')}\n`;
+        }
+      });
+      summary += `\n`;
+    }
+    
+    // Add links summary
+    if (allJiraTickets.length > 0) {
+      summary += `\n🎫 JIRA Tickets:\n`;
+      allJiraTickets.forEach(ticket => {
+        summary += `  • ${ticket}\n`;
+      });
+    }
+    
+    if (allGithubPrs.length > 0) {
+      summary += `\n🔗 GitHub PRs:\n`;
+      allGithubPrs.forEach(pr => {
+        summary += `  • ${pr}\n`;
       });
     }
 
@@ -682,13 +1230,6 @@ const TaskManager = () => {
     return summary;
   };
 
-  const copySummary = (summaryText) => {
-    navigator.clipboard.writeText(summaryText).then(() => {
-      alert('Summary copied to clipboard!');
-    }).catch(() => {
-      alert('Failed to copy summary');
-    });
-  };
 
   const getSortedTasks = () => {
     const taskMap = new Map();
@@ -796,249 +1337,6 @@ const TaskManager = () => {
     return result;
   };
 
-  const TaskItem = ({ task, showActions = true, isCompleted = false, showCheckbox = false }) => {
-    const subtaskInputRef = useRef(null);
-    const [showMenu, setShowMenu] = useState(false);
-    const [isHovered, setIsHovered] = useState(false);
-    const menuRef = useRef(null);
-    const indentationStyle = {
-      marginLeft: `${(task.level || 0) * 20}px`
-    };
-
-    // Auto-focus when sub-task input appears
-    useEffect(() => {
-      if (addingSubTaskTo === task.id && subtaskInputRef.current) {
-        const input = subtaskInputRef.current;
-        input.focus();
-        // Set cursor to end of text
-        const length = input.value.length;
-        input.setSelectionRange(length, length);
-      }
-    }, [addingSubTaskTo, task.id]);
-
-    // Close menu when clicking outside
-    useEffect(() => {
-      const handleClickOutside = (event) => {
-        if (menuRef.current && !menuRef.current.contains(event.target)) {
-          setShowMenu(false);
-        }
-      };
-      if (showMenu) {
-        document.addEventListener('mousedown', handleClickOutside);
-      }
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }, [showMenu]);
-
-    return (
-      <div 
-        className={`group relative py-2 px-3 rounded ${isCompleted ? 'bg-gray-50' : 'hover:bg-gray-50'} transition-colors`}
-        style={indentationStyle}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
-        {editingTask === task.id ? (
-          <div className="space-y-2">
-            <textarea
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              className="w-full p-2 border border-gray-200 rounded text-sm resize-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
-              rows="2"
-              autoFocus
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={saveEdit}
-                className="text-sm px-2 py-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
-              >
-                Save
-              </button>
-              <button
-                onClick={cancelEdit}
-                className="text-sm px-2 py-1 text-gray-500 hover:bg-gray-100 rounded transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-start gap-2">
-              {showCheckbox && (
-                <input
-                  type="checkbox"
-                  checked={selectedTasks.includes(task.id)}
-                  onChange={() => toggleTaskSelection(task.id)}
-                  className="mt-0.5 h-3.5 w-3.5 text-blue-600 focus:ring-1 focus:ring-blue-500 border-gray-300 rounded"
-                />
-              )}
-              <div className="flex-1 min-w-0">
-                {task.parentText && (
-                  <div className="text-xs text-gray-400 mb-0.5">
-                    {task.parentText}
-                  </div>
-                )}
-                <div className="flex items-center gap-2">
-                  <div className={`text-sm ${isCompleted ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{task.text}</div>
-                  {!isCompleted && selectedForToday.includes(task.id) && (
-                    <span className="inline-flex items-center px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">
-                      Today
-                    </span>
-                  )}
-                </div>
-                {isCompleted && (
-                  <div className="text-xs text-gray-400 mt-1">
-                    {new Date(task.completedAt).toLocaleDateString()}
-                  </div>
-                )}
-              </div>
-              
-              {showActions && !isCompleted && (
-                <div className="flex items-start gap-1">
-                  {/* Primary actions - always visible on hover, calendar always visible if selected */}
-                  <div className={`flex gap-1 transition-opacity ${
-                    isHovered || selectedForToday.includes(task.id) ? 'opacity-100' : 'opacity-0'
-                  }`}>
-                    <button
-                      onClick={() => completeTask(task.id)}
-                      className={`p-1 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors ${
-                        !isHovered && selectedForToday.includes(task.id) ? 'opacity-0' : 'opacity-100'
-                      }`}
-                      title="Complete task"
-                    >
-                      <Check size={16} />
-                    </button>
-                    
-                    <button
-                      onClick={() => toggleTaskForToday(task.id)}
-                      className={`p-1 rounded transition-colors ${
-                        selectedForToday.includes(task.id)
-                          ? 'text-blue-600 bg-blue-50'
-                          : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'
-                      }`}
-                      title={selectedForToday.includes(task.id) ? 'Remove from today' : 'Add to today'}
-                    >
-                      <Calendar size={16} />
-                    </button>
-                  </div>
-                  
-                  {/* More actions menu */}
-                  <div className="relative" ref={menuRef}>
-                    <button
-                      onClick={() => setShowMenu(!showMenu)}
-                      className={`p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-all ${
-                        showMenu ? 'bg-gray-100 text-gray-600' : ''
-                      } ${
-                        isHovered ? 'opacity-100' : 'opacity-0'
-                      }`}
-                    >
-                      <MoreVertical size={16} />
-                    </button>
-                    
-                    {showMenu && (
-                      <div className="absolute right-0 top-8 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-10">
-                        <button
-                          onClick={() => {
-                            startEditing(task);
-                            setShowMenu(false);
-                          }}
-                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                        >
-                          <Edit3 size={14} /> Edit
-                        </button>
-                        
-                        <button
-                          onClick={() => {
-                            startAddingSubTask(task);
-                            setShowMenu(false);
-                          }}
-                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                        >
-                          <Plus size={14} /> Add sub-task
-                        </button>
-                        
-                        <div className="border-t border-gray-100 my-1"></div>
-                        
-                        <button
-                          onClick={() => {
-                            createJiraTicket(task);
-                            setShowMenu(false);
-                          }}
-                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                        >
-                          <ExternalLink size={14} /> Create JIRA ticket
-                        </button>
-                        
-                        <button
-                          onClick={() => {
-                            copyTaskToJira(task);
-                            setShowMenu(false);
-                          }}
-                          className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                        >
-                          <FileText size={14} /> Copy JIRA payload
-                        </button>
-                        
-                        <div className="border-t border-gray-100 my-1"></div>
-                        
-                        <button
-                          onClick={() => {
-                            deleteTask(task.id);
-                            setShowMenu(false);
-                          }}
-                          className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                        >
-                          <Trash2 size={14} /> Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-            
-            {/* Sub-task creation UI */}
-            {addingSubTaskTo === task.id && (
-              <div className="mt-2 ml-6">
-                <div className="flex gap-2">
-                  <input
-                    ref={subtaskInputRef}
-                    type="text"
-                    value={subTaskTexts[task.id] || ''}
-                    onChange={(e) => updateSubTaskText(task.id, e.target.value)}
-                    placeholder="Enter sub-task..."
-                    className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 focus:outline-none"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        addSubTask(task);
-                      }
-                      if (e.key === 'Escape') {
-                        cancelAddingSubTask(task.id);
-                      }
-                    }}
-                  />
-                  <button
-                    onClick={() => addSubTask(task)}
-                    className="px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                  >
-                    Add
-                  </button>
-                  <button
-                    onClick={() => cancelAddingSubTask(task.id)}
-                    className="px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 rounded transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    );
-  };
-
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-4xl mx-auto px-4 py-6">
@@ -1046,7 +1344,7 @@ const TaskManager = () => {
           <div className="flex justify-between items-center">
             <h1 className="text-2xl font-semibold text-gray-900">Tasks</h1>
             <div className="text-xs text-gray-400">
-              <span className="hidden sm:inline">Press 1/2/3 to switch tabs, / to search</span>
+              <span className="hidden sm:inline">Press 1/2/3 to switch tabs, / to search, h to highlight</span>
             </div>
           </div>
         </header>
@@ -1077,35 +1375,126 @@ const TaskManager = () => {
         {/* Today's Tasks Tab */}
         {activeTab === 'today' && (
           <div className="space-y-4">
-            <div>
-              <div className="flex justify-between items-center mb-3">
-                <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Today's Focus</h2>
-                {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
-                  <button
-                    onClick={async () => {
-                      const summary = await generateDailySummary(new Date().toLocaleDateString(), true);
-                      setSummaryModal({ isOpen: true, content: summary, title: 'AI Summary for Today' });
-                    }}
-                    className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
-                  >
-                    Generate summary
-                  </button>
-                )}
-              </div>
+            {/* Highlight Section */}
+            {(() => {
+              const highlightTask = highlightTaskId && tasks.find(t => t.id === highlightTaskId && selectedForToday.includes(t.id));
+              const todayTasks = getTodaysTasks();
+              const otherTasks = todayTasks.filter(t => t.id !== highlightTaskId);
               
-              {getTodaysTasks().length === 0 ? (
-                <div className="text-center py-12 text-gray-400">
-                  <p className="text-sm">No tasks for today</p>
-                  <p className="text-xs mt-1">Add tasks from the "All" tab</p>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {getTodaysTasks().map(task => (
-                    <TaskItem key={task.id} task={task} />
+              return (
+                <>
+                  {highlightTask && (
+                    <div className="mb-6">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Star size={18} className="text-yellow-500 fill-yellow-500" />
+                        <h2 className="text-sm font-medium text-gray-700 uppercase tracking-wide">Today's Highlight</h2>
+                      </div>
+                      <div className="rounded-lg bg-gradient-to-r from-yellow-50 to-amber-50 p-1">
+                        <TaskItem 
+                          key={highlightTask.id} 
+                          task={highlightTask}
+                          selectedTasks={selectedTasks}
+                          selectedForToday={selectedForToday}
+                          highlightTaskId={highlightTaskId}
+                          editingTask={editingTask}
+                          editText={editText}
+                          editDescription={editDescription}
+                          editJiraTicket={editJiraTicket}
+                          editGithubPr={editGithubPr}
+                          addingSubTaskTo={addingSubTaskTo}
+                          subTaskTexts={subTaskTexts}
+                          onToggleTaskSelection={toggleTaskSelection}
+                          onCompleteTask={completeTask}
+                          onToggleTaskForToday={toggleTaskForToday}
+                          onSetHighlight={setHighlight}
+                          onStartEditing={startEditing}
+                          onSaveEdit={saveEdit}
+                          onCancelEdit={cancelEdit}
+                          onSetEditText={handleSetEditText}
+                          onSetEditDescription={handleSetEditDescription}
+                          onSetEditJiraTicket={handleSetEditJiraTicket}
+                          onSetEditGithubPr={handleSetEditGithubPr}
+                          onStartAddingSubTask={startAddingSubTask}
+                          onCancelAddingSubTask={cancelAddingSubTask}
+                          onUpdateSubTaskText={updateSubTaskText}
+                          onAddSubTask={addSubTask}
+                          onDeleteTask={deleteTask}
+                          onCreateJiraTicket={createJiraTicket}
+                          onCopyTaskToJira={copyTaskToJira}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div>
+                    <div className="flex justify-between items-center mb-3">
+                      <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
+                        {highlightTask ? 'Other Tasks' : 'Today\'s Focus'}
+                      </h2>
+                      {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
+                        <button
+                          onClick={async () => {
+                            const summary = await generateDailySummary(new Date().toLocaleDateString(), true);
+                            setSummaryModal({ isOpen: true, content: summary, title: 'AI Summary for Today' });
+                          }}
+                          className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
+                        >
+                          Generate summary
+                        </button>
+                      )}
+                    </div>
+                    
+                    {todayTasks.length === 0 ? (
+                      <div className="text-center py-12 text-gray-400">
+                        <p className="text-sm">No tasks for today</p>
+                        <p className="text-xs mt-1">Add tasks from the "All" tab</p>
+                      </div>
+                    ) : otherTasks.length === 0 && highlightTask ? (
+                      <div className="text-center py-8 text-gray-400">
+                        <p className="text-xs">No other tasks for today</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        {otherTasks.map(task => (
+                    <TaskItem 
+                      key={task.id} 
+                      task={task}
+                      selectedTasks={selectedTasks}
+                      selectedForToday={selectedForToday}
+                      highlightTaskId={highlightTaskId}
+                      editingTask={editingTask}
+                      editText={editText}
+                      editDescription={editDescription}
+                      editJiraTicket={editJiraTicket}
+                      editGithubPr={editGithubPr}
+                      addingSubTaskTo={addingSubTaskTo}
+                      subTaskTexts={subTaskTexts}
+                      onToggleTaskSelection={toggleTaskSelection}
+                      onCompleteTask={completeTask}
+                      onToggleTaskForToday={toggleTaskForToday}
+                      onSetHighlight={setHighlight}
+                      onStartEditing={startEditing}
+                      onSaveEdit={saveEdit}
+                      onCancelEdit={cancelEdit}
+                      onSetEditText={handleSetEditText}
+                      onSetEditDescription={handleSetEditDescription}
+                      onSetEditJiraTicket={handleSetEditJiraTicket}
+                      onSetEditGithubPr={handleSetEditGithubPr}
+                      onStartAddingSubTask={startAddingSubTask}
+                      onCancelAddingSubTask={cancelAddingSubTask}
+                      onUpdateSubTaskText={updateSubTaskText}
+                      onAddSubTask={addSubTask}
+                      onDeleteTask={deleteTask}
+                      onCreateJiraTicket={createJiraTicket}
+                      onCopyTaskToJira={copyTaskToJira}
+                    />
                   ))}
-                </div>
-              )}
-            </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
 
             {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
               <div className="mt-8 pt-4 border-t border-gray-100">
@@ -1263,7 +1652,39 @@ const TaskManager = () => {
               ) : (
                 <div className="space-y-1">
                   {getFilteredAllTasks().map(task => (
-                    <TaskItem key={task.id} task={task} showCheckbox={true} />
+                    <TaskItem 
+                      key={task.id} 
+                      task={task} 
+                      showCheckbox={true}
+                      selectedTasks={selectedTasks}
+                      selectedForToday={selectedForToday}
+                      highlightTaskId={highlightTaskId}
+                      editingTask={editingTask}
+                      editText={editText}
+                      editDescription={editDescription}
+                      editJiraTicket={editJiraTicket}
+                      editGithubPr={editGithubPr}
+                      addingSubTaskTo={addingSubTaskTo}
+                      subTaskTexts={subTaskTexts}
+                      onToggleTaskSelection={toggleTaskSelection}
+                      onCompleteTask={completeTask}
+                      onToggleTaskForToday={toggleTaskForToday}
+                      onSetHighlight={setHighlight}
+                      onStartEditing={startEditing}
+                      onSaveEdit={saveEdit}
+                      onCancelEdit={cancelEdit}
+                      onSetEditText={handleSetEditText}
+                      onSetEditDescription={handleSetEditDescription}
+                      onSetEditJiraTicket={handleSetEditJiraTicket}
+                      onSetEditGithubPr={handleSetEditGithubPr}
+                      onStartAddingSubTask={startAddingSubTask}
+                      onCancelAddingSubTask={cancelAddingSubTask}
+                      onUpdateSubTaskText={updateSubTaskText}
+                      onAddSubTask={addSubTask}
+                      onDeleteTask={deleteTask}
+                      onCreateJiraTicket={createJiraTicket}
+                      onCopyTaskToJira={copyTaskToJira}
+                    />
                   ))}
                 </div>
               )}
@@ -1334,7 +1755,38 @@ const TaskManager = () => {
               ) : (
                 <div className="space-y-1">
                   {getFilteredCompletedTasks().map(task => (
-                    <TaskItem key={task.id} task={task} showActions={false} isCompleted={true} />
+                    <TaskItem 
+                      key={task.id} 
+                      task={task} 
+                      showActions={false} 
+                      isCompleted={true}
+                      selectedTasks={selectedTasks}
+                      selectedForToday={selectedForToday}
+                      editingTask={editingTask}
+                      editText={editText}
+                      editDescription={editDescription}
+                      editJiraTicket={editJiraTicket}
+                      editGithubPr={editGithubPr}
+                      addingSubTaskTo={addingSubTaskTo}
+                      subTaskTexts={subTaskTexts}
+                      onToggleTaskSelection={toggleTaskSelection}
+                      onCompleteTask={completeTask}
+                      onToggleTaskForToday={toggleTaskForToday}
+                      onStartEditing={startEditing}
+                      onSaveEdit={saveEdit}
+                      onCancelEdit={cancelEdit}
+                      onSetEditText={handleSetEditText}
+                      onSetEditDescription={handleSetEditDescription}
+                      onSetEditJiraTicket={handleSetEditJiraTicket}
+                      onSetEditGithubPr={handleSetEditGithubPr}
+                      onStartAddingSubTask={startAddingSubTask}
+                      onCancelAddingSubTask={cancelAddingSubTask}
+                      onUpdateSubTaskText={updateSubTaskText}
+                      onAddSubTask={addSubTask}
+                      onDeleteTask={deleteTask}
+                      onCreateJiraTicket={createJiraTicket}
+                      onCopyTaskToJira={copyTaskToJira}
+                    />
                   ))}
                 </div>
               )}

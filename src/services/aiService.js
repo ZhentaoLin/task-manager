@@ -31,12 +31,19 @@ class AIService {
     const taskList = tasks.map(task => ({
       text: task.text,
       parentText: task.parentText,
+      description: task.description,
+      jiraTicket: task.jiraTicket,
+      githubPr: task.githubPr,
       completedAt: task.completedAt,
       completedDate: task.completedDate
     }));
 
     const dateContext = targetDate || new Date().toLocaleDateString();
     const timeframe = summaryType === 'weekly' ? 'week' : 'day';
+    
+    // Collect all JIRA tickets and GitHub PRs
+    const jiraTickets = tasks.filter(t => t.jiraTicket).map(t => t.jiraTicket);
+    const githubPrs = tasks.filter(t => t.githubPr).map(t => t.githubPr);
 
     return `
 You are a productivity assistant analyzing completed tasks. Generate an insightful summary that goes beyond just listing tasks.
@@ -45,15 +52,17 @@ COMPLETED TASKS (${timeframe} ending ${dateContext}):
 ${JSON.stringify(taskList, null, 2)}
 
 Please provide:
-1. **Key Accomplishments** - Major themes and achievements
+1. **Key Accomplishments** - Major themes and achievements (use task descriptions for context)
 2. **Productivity Insights** - Patterns, focus areas, or notable progress
 3. **Task Analysis** - Breakdown by projects/categories
-4. **Recommendations** - Suggestions for future work or improvements
+${jiraTickets.length > 0 ? '4. **JIRA Tickets** - List all associated JIRA tickets' : ''}
+${githubPrs.length > 0 ? '5. **GitHub PRs** - List all associated pull requests' : ''}
+6. **Recommendations** - Suggestions for future work or improvements
 
 Format as a professional summary suitable for status updates or personal reflection. Be concise but insightful.
 Use bullet points and clear sections. Aim for 150-200 words.
 
-Focus on VALUE and IMPACT rather than just listing what was done.
+Focus on VALUE and IMPACT rather than just listing what was done. Use the description fields to understand the context and importance of each task.
 `;
   }
 
