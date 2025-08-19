@@ -12,6 +12,7 @@ const TaskItem = memo(({
   selectedTasks,
   selectedForToday,
   highlightTaskId,
+  rolloverDate,
   editingTask,
   editText,
   editDescription,
@@ -36,7 +37,8 @@ const TaskItem = memo(({
   onAddSubTask,
   onDeleteTask,
   onCreateJiraTicket,
-  onCopyTaskToJira
+  onCopyTaskToJira,
+  onDismissRollover
 }) => {
   const subtaskInputRef = useRef(null);
   const [showMenu, setShowMenu] = useState(false);
@@ -81,6 +83,8 @@ const TaskItem = memo(({
       className={`group relative py-2 px-3 rounded ${
         isHighlight && !isCompleted 
           ? 'bg-gradient-to-r from-yellow-50 to-amber-50 border-l-4 border-yellow-400' 
+          : rolloverDate && !isCompleted
+          ? 'bg-amber-50/30 border-l-4 border-amber-400 hover:bg-amber-50/50'
           : isCompleted 
           ? 'bg-gray-50' 
           : 'hover:bg-gray-50'
@@ -197,9 +201,27 @@ const TaskItem = memo(({
                       </a>
                     )}
                     
-                    {!isCompleted && selectedForToday.includes(task.id) && (
+                    {!isCompleted && selectedForToday.includes(task.id) && !rolloverDate && (
                       <span className="inline-flex items-center px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">
                         Today
+                      </span>
+                    )}
+                    
+                    {!isCompleted && rolloverDate && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                        <span>From {new Date(rolloverDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                        {onDismissRollover && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDismissRollover(task.id);
+                            }}
+                            className="ml-0.5 hover:text-amber-900"
+                            title="Dismiss spillover"
+                          >
+                            ×
+                          </button>
+                        )}
                       </span>
                     )}
                     
@@ -385,6 +407,7 @@ const TaskManager = () => {
   const [completedTasks, setCompletedTasks] = useState([]);
   const [selectedForToday, setSelectedForToday] = useState([]);
   const [highlightTaskId, setHighlightTaskId] = useState(null);
+  const [rolloverInfo, setRolloverInfo] = useState(new Map());
   const [isLoaded, setIsLoaded] = useState(false);
   const [newTask, setNewTask] = useState('');
   const [bulkTasks, setBulkTasks] = useState('');
@@ -464,24 +487,27 @@ const TaskManager = () => {
       console.log('Loading data from database...');
       
       try {
-        const [loadedTasks, loadedCompleted, loadedToday, loadedHighlight] = await Promise.all([
+        const [loadedTasks, loadedCompleted, loadedToday, loadedHighlight, loadedRolloverInfo] = await Promise.all([
           databaseService.getTasks(),
           databaseService.getCompletedTasks(),
           databaseService.getSelectedForToday(),
-          databaseService.getTodayHighlight()
+          databaseService.getTodayHighlight(),
+          databaseService.getRolloverInfo()
         ]);
         
         console.log('Loaded data:', { 
           tasks: loadedTasks.length, 
           completed: loadedCompleted.length, 
           today: loadedToday.length,
-          highlight: loadedHighlight
+          highlight: loadedHighlight,
+          rollovers: loadedRolloverInfo.size
         });
         
         setTasks(loadedTasks);
         setCompletedTasks(loadedCompleted);
         setSelectedForToday(loadedToday);
         setHighlightTaskId(loadedHighlight);
+        setRolloverInfo(loadedRolloverInfo);
         
       } catch (error) {
         console.error('Error loading data:', error);
@@ -986,6 +1012,29 @@ const TaskManager = () => {
     setHighlightTaskId(taskId);
   }, []);
 
+  const dismissRolloverTask = async (taskId) => {
+    await databaseService.dismissRolloverTask(taskId);
+    // Remove from selectedForToday
+    setSelectedForToday(prev => prev.filter(id => id !== taskId));
+    // Remove from rolloverInfo
+    setRolloverInfo(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(taskId);
+      return newMap;
+    });
+  };
+
+  const clearAllRollovers = async () => {
+    if (window.confirm('Clear all carried forward tasks? They will remain in your backlog.')) {
+      await databaseService.clearAllRollovers();
+      // Remove all rollover tasks from selectedForToday
+      const rolloverTaskIds = Array.from(rolloverInfo.keys());
+      setSelectedForToday(prev => prev.filter(id => !rolloverTaskIds.includes(id)));
+      // Clear rolloverInfo
+      setRolloverInfo(new Map());
+    }
+  };
+
   const getTodaysTasks = () => {
     const todayTasks = tasks.filter(task => selectedForToday.includes(task.id));
     
@@ -1094,7 +1143,14 @@ const TaskManager = () => {
     const highlightCompleted = highlightTaskId && dayTasks.find(t => t.id === highlightTaskId);
     
     if (dayTasks.length === 0) {
-      return `No tasks completed on ${targetDate}.`;
+      // Get tasks that are planned for today
+      const todayPlannedTasks = tasks.filter(task => selectedForToday.includes(task.id));
+      
+      if (todayPlannedTasks.length > 0) {
+        return `No tasks completed on ${targetDate} yet.\n\n📋 Tasks planned for today (${todayPlannedTasks.length}):\n${todayPlannedTasks.map(task => `• ${task.text}`).join('\n')}\n\nComplete some tasks to generate an AI-powered summary!`;
+      } else {
+        return `No tasks completed on ${targetDate}.\n\nAdd some tasks to your "Today" list and complete them to see your progress summary!`;
+      }
     }
 
     // Try AI-enhanced summary first
@@ -1375,6 +1431,23 @@ const TaskManager = () => {
         {/* Today's Tasks Tab */}
         {activeTab === 'today' && (
           <div className="space-y-4">
+            {/* Rollover notification and clear button */}
+            {rolloverInfo.size > 0 && (
+              <div className="flex justify-between items-center p-3 bg-amber-50 rounded-lg border border-amber-200">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-amber-700">
+                    {rolloverInfo.size} {rolloverInfo.size === 1 ? 'task' : 'tasks'} carried forward from previous days
+                  </span>
+                </div>
+                <button
+                  onClick={clearAllRollovers}
+                  className="text-sm px-3 py-1 text-amber-700 hover:bg-amber-100 rounded transition-colors"
+                >
+                  Clear all spillovers
+                </button>
+              </div>
+            )}
+            
             {/* Highlight Section */}
             {(() => {
               const highlightTask = highlightTaskId && tasks.find(t => t.id === highlightTaskId && selectedForToday.includes(t.id));
@@ -1396,6 +1469,7 @@ const TaskManager = () => {
                           selectedTasks={selectedTasks}
                           selectedForToday={selectedForToday}
                           highlightTaskId={highlightTaskId}
+                          rolloverDate={rolloverInfo.get(highlightTask.id)}
                           editingTask={editingTask}
                           editText={editText}
                           editDescription={editDescription}
@@ -1421,6 +1495,7 @@ const TaskManager = () => {
                           onDeleteTask={deleteTask}
                           onCreateJiraTicket={createJiraTicket}
                           onCopyTaskToJira={copyTaskToJira}
+                          onDismissRollover={dismissRolloverTask}
                         />
                       </div>
                     </div>
@@ -1431,17 +1506,15 @@ const TaskManager = () => {
                       <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
                         {highlightTask ? 'Other Tasks' : 'Today\'s Focus'}
                       </h2>
-                      {completedTasks.filter(t => t.completedDate === new Date().toLocaleDateString()).length > 0 && (
-                        <button
-                          onClick={async () => {
-                            const summary = await generateDailySummary(new Date().toLocaleDateString(), true);
-                            setSummaryModal({ isOpen: true, content: summary, title: 'AI Summary for Today' });
-                          }}
-                          className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
-                        >
-                          Generate summary
-                        </button>
-                      )}
+                      <button
+                        onClick={async () => {
+                          const summary = await generateDailySummary(new Date().toLocaleDateString(), true);
+                          setSummaryModal({ isOpen: true, content: summary, title: 'Today\'s Summary' });
+                        }}
+                        className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
+                      >
+                        Today's Summary
+                      </button>
                     </div>
                     
                     {todayTasks.length === 0 ? (
@@ -1462,6 +1535,7 @@ const TaskManager = () => {
                       selectedTasks={selectedTasks}
                       selectedForToday={selectedForToday}
                       highlightTaskId={highlightTaskId}
+                      rolloverDate={rolloverInfo.get(task.id)}
                       editingTask={editingTask}
                       editText={editText}
                       editDescription={editDescription}
@@ -1487,6 +1561,7 @@ const TaskManager = () => {
                       onDeleteTask={deleteTask}
                       onCreateJiraTicket={createJiraTicket}
                       onCopyTaskToJira={copyTaskToJira}
+                      onDismissRollover={dismissRolloverTask}
                     />
                   ))}
                       </div>

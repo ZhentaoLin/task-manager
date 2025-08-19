@@ -192,21 +192,53 @@ class DatabaseService {
     }
   }
 
-  // Selected for today operations
+  // Selected for today operations (with rollover support)
   async getSelectedForToday() {
     if (!this.useDatabase) {
       return [];
     }
 
     try {
-      const { data, error } = await this.supabase
-        .from('selected_for_today')
-        .select('task_id');
+      const today = new Date().toISOString().split('T')[0];
       
-      if (error) throw error;
-      return data ? data.map(item => item.task_id) : [];
+      // First, check and update rollovers
+      await this.checkAndUpdateRollovers();
+      
+      // Get today's explicitly selected tasks
+      const { data: todayTasks, error: todayError } = await this.supabase
+        .from('selected_for_today')
+        .select('task_id')
+        .eq('selected_date', today);
+      
+      if (todayError) throw todayError;
+      
+      // Get active rollover tasks
+      const { data: rolloverTasks, error: rolloverError } = await this.supabase
+        .from('task_rollover_status')
+        .select('task_id')
+        .eq('is_active', true);
+      
+      if (rolloverError) throw rolloverError;
+      
+      // Combine and deduplicate task IDs
+      const todayIds = todayTasks ? todayTasks.map(item => item.task_id) : [];
+      const rolloverIds = rolloverTasks ? rolloverTasks.map(item => item.task_id) : [];
+      const allIds = [...new Set([...todayIds, ...rolloverIds])];
+      
+      // Filter out completed tasks
+      const { data: completedTasks, error: completedError } = await this.supabase
+        .from('completed_tasks')
+        .select('id')
+        .in('id', allIds);
+      
+      if (completedError) throw completedError;
+      
+      const completedIds = completedTasks ? completedTasks.map(t => t.id) : [];
+      const finalIds = allIds.filter(id => !completedIds.includes(id));
+      
+      return finalIds;
     } catch (error) {
-      console.error('Error fetching selected for today:', error);
+      console.error('Error fetching selected for today with rollovers:', error);
       return [];
     }
   }
@@ -217,17 +249,52 @@ class DatabaseService {
     }
 
     try {
-      await this.supabase.from('selected_for_today').delete().gt('id', 0);
+      const today = new Date().toISOString().split('T')[0];
+      
+      // First, delete only today's selections (preserve historical data)
+      const { error: deleteError } = await this.supabase
+        .from('selected_for_today')
+        .delete()
+        .eq('selected_date', today);
+      
+      if (deleteError) {
+        console.error('Error deleting old selections:', deleteError);
+      }
       
       if (selectedIds.length > 0) {
         const { error } = await this.supabase
           .from('selected_for_today')
-          .insert(selectedIds.map(taskId => ({ task_id: taskId })));
+          .upsert(selectedIds.map(taskId => ({ 
+            task_id: taskId,
+            selected_date: today
+          })), {
+            onConflict: 'task_id,selected_date'
+          });
         
         if (error) throw error;
       }
     } catch (error) {
       console.error('Error saving selected for today:', error);
+    }
+  }
+
+  // Get tasks selected for a specific date (for historical data)
+  async getSelectedForDate(date) {
+    if (!this.useDatabase) {
+      return [];
+    }
+
+    try {
+      const { data, error } = await this.supabase
+        .from('selected_for_today')
+        .select('task_id')
+        .eq('selected_date', date);
+      
+      if (error) throw error;
+      return data ? data.map(item => item.task_id) : [];
+    } catch (error) {
+      console.error('Error fetching selected for date:', error);
+      return [];
     }
   }
 
@@ -298,6 +365,176 @@ class DatabaseService {
       }
     } catch (error) {
       console.error('Error saving today highlight:', error);
+    }
+  }
+
+  // Rollover/Spillover operations
+  async checkAndUpdateRollovers() {
+    if (!this.useDatabase) return;
+    
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Get all historical selected_for_today entries before today
+      const { data: historicalSelections, error: histError } = await this.supabase
+        .from('selected_for_today')
+        .select('task_id, selected_date')
+        .lt('selected_date', today);
+      
+      if (histError) throw histError;
+      if (!historicalSelections || historicalSelections.length === 0) return;
+      
+      // Get all task IDs from historical selections
+      const taskIds = historicalSelections.map(s => s.task_id);
+      
+      // Check which tasks are completed
+      const { data: completedTasks, error: compError } = await this.supabase
+        .from('completed_tasks')
+        .select('id')
+        .in('id', taskIds);
+      
+      if (compError) throw compError;
+      
+      const completedIds = completedTasks ? completedTasks.map(t => t.id) : [];
+      
+      // Get existing rollover records
+      const { data: existingRollovers, error: rollError } = await this.supabase
+        .from('task_rollover_status')
+        .select('task_id, is_active');
+      
+      if (rollError) throw rollError;
+      
+      const existingRolloverMap = new Map();
+      if (existingRollovers) {
+        existingRollovers.forEach(r => existingRolloverMap.set(r.task_id, r.is_active));
+      }
+      
+      // Process each historical selection
+      for (const selection of historicalSelections) {
+        const isCompleted = completedIds.includes(selection.task_id);
+        const existsInRollover = existingRolloverMap.has(selection.task_id);
+        
+        if (isCompleted) {
+          // If task is completed, deactivate any rollover record
+          if (existsInRollover && existingRolloverMap.get(selection.task_id)) {
+            await this.supabase
+              .from('task_rollover_status')
+              .update({ is_active: false, updated_at: new Date().toISOString() })
+              .eq('task_id', selection.task_id);
+          }
+        } else {
+          // If task is incomplete, ensure it's in rollover table and active
+          if (!existsInRollover) {
+            // Insert new rollover record
+            await this.supabase
+              .from('task_rollover_status')
+              .upsert({
+                task_id: selection.task_id,
+                original_selected_date: selection.selected_date,
+                rollover_reason: 'incomplete',
+                is_active: true
+              }, { onConflict: 'task_id' });
+          } else if (!existingRolloverMap.get(selection.task_id)) {
+            // Reactivate if it was previously dismissed
+            await this.supabase
+              .from('task_rollover_status')
+              .update({ 
+                is_active: true, 
+                dismissed_at: null,
+                updated_at: new Date().toISOString() 
+              })
+              .eq('task_id', selection.task_id);
+          }
+        }
+      }
+      
+      console.log('Rollover status updated');
+    } catch (error) {
+      console.error('Error checking and updating rollovers:', error);
+    }
+  }
+  
+  async dismissRolloverTask(taskId) {
+    if (!this.useDatabase) return;
+    
+    try {
+      const { error } = await this.supabase
+        .from('task_rollover_status')
+        .update({ 
+          is_active: false, 
+          dismissed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('task_id', taskId);
+      
+      if (error) throw error;
+      console.log('Rollover task dismissed:', taskId);
+    } catch (error) {
+      console.error('Error dismissing rollover task:', error);
+    }
+  }
+  
+  async clearAllRollovers() {
+    if (!this.useDatabase) return;
+    
+    try {
+      const { error } = await this.supabase
+        .from('task_rollover_status')
+        .update({ 
+          is_active: false, 
+          dismissed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('is_active', true);
+      
+      if (error) throw error;
+      console.log('All rollover tasks cleared');
+    } catch (error) {
+      console.error('Error clearing all rollovers:', error);
+    }
+  }
+  
+  async getRolloverInfo() {
+    if (!this.useDatabase) return [];
+    
+    try {
+      const { data, error } = await this.supabase
+        .from('task_rollover_status')
+        .select('task_id, original_selected_date')
+        .eq('is_active', true);
+      
+      if (error) throw error;
+      
+      // Convert to a map for easy lookup
+      const rolloverMap = new Map();
+      if (data) {
+        data.forEach(item => {
+          rolloverMap.set(item.task_id, item.original_selected_date);
+        });
+      }
+      
+      return rolloverMap;
+    } catch (error) {
+      console.error('Error fetching rollover info:', error);
+      return new Map();
+    }
+  }
+
+  // Clean up old "today" selections from previous days
+  async cleanupOldTodaySelections() {
+    if (!this.useDatabase) return;
+    
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { error } = await this.supabase
+        .from('selected_for_today')
+        .delete()
+        .lt('selected_date', today);
+      
+      if (error) throw error;
+      console.log('Cleaned up old today selections');
+    } catch (error) {
+      console.error('Error cleaning up old today selections:', error);
     }
   }
 
